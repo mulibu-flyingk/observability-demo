@@ -24,6 +24,7 @@ import (
 	"cloud.google.com/go/profiler"
 	"contrib.go.opencensus.io/exporter/jaeger"
 	"contrib.go.opencensus.io/exporter/stackdriver"
+	"contrib.go.opencensus.io/exporter/ocagent"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 	"go.opencensus.io/plugin/ocgrpc"
@@ -140,6 +141,38 @@ func initJaegerTracing() {
 	log.Info("jaeger initialization completed.")
 }
 
+func initOpenCensusTracing() {
+	svcAddr := os.Getenv("OTEL_AGENT_ENDPOINT")
+	if svcAddr == "" {
+		log.Info("opencensus initialization disabled.")
+		return
+	}
+
+	ocAgentAddr, ok := os.LookupEnv("OTEL_AGENT_ENDPOINT")
+	if !ok {
+		ocAgentAddr = "0.0.0.0:55678"
+	}
+
+	oce, err := ocagent.NewExporter(
+		ocagent.WithAddress(ocAgentAddr),
+		ocagent.WithInsecure(),
+		ocagent.WithServiceName("checkoutservice"))
+
+	if err != nil {
+		log.Fatalf("Failed to create ocagent-exporter: %v", err)
+	}
+	trace.RegisterExporter(oce)
+	view.RegisterExporter(oce)
+
+	// Some configurations to get observability signals out.
+	view.SetReportingPeriod(7 * time.Second)
+	trace.ApplyConfig(trace.Config{
+		DefaultSampler: trace.AlwaysSample(),
+	})
+
+	log.Info("opencensus initialization completed.")
+}
+
 func initStats(exporter *stackdriver.Exporter) {
 	view.SetReportingPeriod(60 * time.Second)
 	view.RegisterExporter(exporter)
@@ -175,6 +208,7 @@ func initStackdriverTracing() {
 func initTracing() {
 	initJaegerTracing()
 	initStackdriverTracing()
+	initOpenCensusTracing()
 }
 
 func initProfiling(service, version string) {
