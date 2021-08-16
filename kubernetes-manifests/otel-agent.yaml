@@ -9,6 +9,10 @@ metadata:
 data:
   otel-agent-config: |
     receivers:
+      otlp:
+        protocols:
+          grpc:
+          http:
       opencensus:
     exporters:
       otlp:
@@ -36,11 +40,11 @@ data:
       extensions: [health_check, pprof, zpages, memory_ballast]
       pipelines:
         traces:
-          receivers: [opencensus]
+          receivers: [opencensus, otlp]
           exporters: [otlp, logging]
           processors: [batch, memory_limiter]
         metrics:
-          receivers: [opencensus]
+          receivers: [opencensus, otlp]
           exporters: [logging,otlp]
 ---
 apiVersion: apps/v1
@@ -81,6 +85,7 @@ spec:
         - containerPort: 13133 # health_check extension port
         - containerPort: 8888  # Metrics port
         - containerPort: 55678 # OpenCensus receiver port for pometheus Metrics
+        - containerPort: 4317 # Default endpoint for OpenTelemetry receiver.
         #- containerPort: 55680 # Default OpenTelemetry receiver port.
         volumeMounts:
         - name: otel-agent-config-vol
@@ -136,3 +141,7 @@ spec:
       protocol: TCP
       port: 55678
       targetPort: 55678
+    - name: otlp # Default endpoint for OpenTelemetry receiver.
+      port: 4317
+      protocol: TCP
+      targetPort: 4317
