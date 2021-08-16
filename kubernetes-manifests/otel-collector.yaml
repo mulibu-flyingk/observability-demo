@@ -32,8 +32,6 @@ data:
     processors:
       batch:
       memory_limiter:
-        # Same as --mem-ballast-size-mib CLI argument
-        ballast_size_mib: 165
         # 80% of maximum memory up to 2G
         limit_mib: 400
         # 25% of limit up to 2G
@@ -45,8 +43,10 @@ data:
         endpoint: :1888
       zpages:
         endpoint: :55679
+      memory_ballast:
+        size_mib: 165
     service:
-      extensions: [pprof, zpages, health_check]
+      extensions: [pprof, zpages, health_check, memory_ballast]
       pipelines:
         traces:
           receivers: [opencensus]
@@ -82,8 +82,6 @@ spec:
       - command:
           - "/otelcol"
           - "--config=/conf/otel-collector-config.yaml"
-#           Memory Ballast size should be max 1/3 to 1/2 of memory.
-          - "--mem-ballast-size-mib=683"
         image: otel/opentelemetry-collector-dev:latest
         name: otel-collector
         resources:
