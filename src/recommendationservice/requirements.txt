@@ -23,7 +23,7 @@ httplib2==0.18.1          # via google-api-python-client, google-auth-httplib2
 idna==2.10                # via requests
 opencensus-context==0.1.2  # via opencensus
 opencensus-ext-grpc==0.7.1  # via -r requirements.in
-opencensus-ext-stackdriver==0.7.3  # via -r requirements.in
+opencensus-ext-ocagent==0.7.1  # via -r requirements.in
 opencensus==0.7.11        # via -r requirements.in, opencensus-ext-grpc, opencensus-ext-stackdriver
 protobuf==3.13.0          # via google-api-core, googleapis-common-protos, grpcio-health-checking
 pyasn1-modules==0.2.8     # via google-auth
