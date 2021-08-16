@@ -11,8 +11,8 @@ data:
     receivers:
       opencensus:
     exporters:
-      opencensus:
-        endpoint: "otel-collector.otel.svc.cluster.local:55678"
+      otlp:
+        endpoint: "otel-collector.otel.svc.cluster.local:4317"
         insecure: true
       logging:
         loglevel: debug
@@ -37,11 +37,11 @@ data:
       pipelines:
         traces:
           receivers: [opencensus]
-          exporters: [opencensus, logging]
+          exporters: [otlp, logging]
           processors: [batch, memory_limiter]
         metrics:
           receivers: [opencensus]
-          exporters: [logging,opencensus]
+          exporters: [logging,otlp]
 ---
 apiVersion: apps/v1
 kind: DaemonSet

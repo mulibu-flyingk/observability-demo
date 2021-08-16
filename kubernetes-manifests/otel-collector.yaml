@@ -9,8 +9,10 @@ metadata:
 data:
   otel-collector-config: |
     receivers:
-      opencensus:
-        endpoint: 0.0.0.0:55678
+      otlp:
+        protocols:
+          grpc:
+          http:
     exporters:
       prometheus:
         endpoint: "0.0.0.0:8889"
@@ -49,11 +51,11 @@ data:
       extensions: [pprof, zpages, health_check, memory_ballast]
       pipelines:
         traces:
-          receivers: [opencensus]
+          receivers: [otlp]
           exporters: [logging, zipkin, jaeger]
           processors: [batch, memory_limiter]
         metrics:
-          receivers: [opencensus]
+          receivers: [otlp]
           exporters: [logging,prometheus]
 ---
 apiVersion: apps/v1
@@ -96,7 +98,7 @@ spec:
         - containerPort: 55679 # Default endpoint for ZPages.
         - containerPort: 13133 # Default endpoint for health_check
         - containerPort: 8888  # Default endpoint for otel-collector metrics.
-        - containerPort: 55678 # default port for OpenCensus receiver
+        - containerPort: 4317 # Default endpoint for OpenTelemetry receiver.
         - containerPort: 8889 # default port for prometheus exporter
         # - containerPort: 55680 # Default endpoint for OpenTelemetry receiver.
         # - containerPort: 14250 # Default endpoint for Jaeger HTTP receiver.
@@ -159,10 +161,10 @@ spec:
       protocol: TCP
       port: 8888
       targetPort: 8888
-    - name: opencensus-receiver
+    - name: otlp # Default endpoint for OpenTelemetry receiver.
+      port: 4317
       protocol: TCP
-      port: 55678
-      targetPort: 55678
+      targetPort: 4317
     - name: prom-exporter
       protocol: TCP
       port: 8889
