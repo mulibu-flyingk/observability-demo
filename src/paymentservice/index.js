@@ -16,19 +16,7 @@
 
 'use strict';
 
-require('@google-cloud/profiler').start({
-  serviceContext: {
-    service: 'paymentservice',
-    version: '1.0.0'
-  }
-});
-require('@google-cloud/trace-agent').start();
-require('@google-cloud/debug-agent').start({
-  serviceContext: {
-    service: 'paymentservice',
-    version: 'VERSION'
-  }
-});
+require('./tracing.js');
 
 const path = require('path');
 const HipsterShopServer = require('./server');
