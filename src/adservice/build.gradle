@@ -40,6 +40,8 @@ dependencies {
                 "io.opencensus:opencensus-exporter-trace-jaeger:${opencensusVersion}",
                 "io.opencensus:opencensus-exporter-stats-stackdriver:${opencensusVersion}",
                 "io.opencensus:opencensus-exporter-trace-stackdriver:${opencensusVersion}",
+                "io.opencensus:opencensus-exporter-metrics-ocagent:${opencensusVersion}",
+                "io.opencensus:opencensus-exporter-trace-ocagent:${opencensusVersion}",
                 "io.opencensus:opencensus-exporter-trace-logging:${opencensusVersion}",
                 "io.grpc:grpc-protobuf:${grpcVersion}",
                 "io.grpc:grpc-stub:${grpcVersion}",
@@ -104,8 +106,7 @@ task adService(type: CreateStartScripts) {
     outputDir = new File(project.buildDir, 'tmp')
     classpath = startScripts.classpath
     defaultJvmOpts =
-            ["-Dlog4j2.contextDataInjector=io.opencensus.contrib.logcorrelation.log4j2.OpenCensusTraceContextDataInjector",
-             "-agentpath:/opt/cprof/profiler_java_agent.so=-cprof_service=adservice,-cprof_service_version=1.0.0"]
+            ["-Dlog4j2.contextDataInjector=io.opencensus.contrib.logcorrelation.log4j2.OpenCensusTraceContextDataInjector"]
 }
 
 task adServiceClient(type: CreateStartScripts) {
@@ -114,8 +115,7 @@ task adServiceClient(type: CreateStartScripts) {
     outputDir = new File(project.buildDir, 'tmp')
     classpath = startScripts.classpath
     defaultJvmOpts =
-            ["-Dlog4j2.contextDataInjector=io.opencensus.contrib.logcorrelation.log4j2.OpenCensusTraceContextDataInjector",
-             "-agentpath:/opt/cprof/profiler_java_agent.so=-cprof_service=adserviceclient,-cprof_service_version=1.0.0"]
+            ["-Dlog4j2.contextDataInjector=io.opencensus.contrib.logcorrelation.log4j2.OpenCensusTraceContextDataInjector"]
 }
 
 applicationDistribution.into('bin') {
