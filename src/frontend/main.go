@@ -20,16 +20,16 @@ import (
 	"net/http"
 	"os"
 	"time"
-
-	"contrib.go.opencensus.io/exporter/ocagent"
 	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"go.opencensus.io/plugin/ocgrpc"
-	"go.opencensus.io/plugin/ochttp"
-	"go.opencensus.io/plugin/ochttp/propagation/b3"
-	"go.opencensus.io/stats/view"
-	"go.opencensus.io/trace"
+	middleware "go.opentelemetry.io/contrib/instrumentation/github.com/gorilla/mux/otelmux"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpgrpc"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/trace"
 	"google.golang.org/grpc"
 )
 
@@ -94,7 +94,7 @@ func main() {
 
 	if os.Getenv("DISABLE_TRACING") == "" {
 		log.Info("Tracing enabled.")
-		go initTracing(log)
+		go initOtelTracing(log)
 	} else {
 		log.Info("Tracing disabled.")
 	}
@@ -133,58 +133,36 @@ func main() {
 	r.PathPrefix("/static/").Handler(http.StripPrefix("/static/", http.FileServer(http.Dir("./static/"))))
 	r.HandleFunc("/robots.txt", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "User-agent: *\nDisallow: /") })
 	r.HandleFunc("/_healthz", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "ok") })
-
+	r.Use(middleware.Middleware("frontend"))
 	var handler http.Handler = r
 	handler = &logHandler{log: log, next: handler} // add logging
 	handler = ensureSessionID(handler)             // add session ID
-	handler = &ochttp.Handler{                     // add opencensus instrumentation
-		Handler:     handler,
-		Propagation: &b3.HTTPFormat{}}
 
 	log.Infof("starting server on " + addr + ":" + srvPort)
 	log.Fatal(http.ListenAndServe(addr+":"+srvPort, handler))
 }
 
-func initOpenCensusTracing(log logrus.FieldLogger) {
-	svcAddr := os.Getenv("OTEL_AGENT_ENDPOINT")
-	if svcAddr == "" {
-		log.Info("opencensus initialization disabled.")
-		return
+func initOtelTracing(log logrus.FieldLogger) {
+	otlpendpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if otlpendpoint == "" {
+		otlpendpoint = "api.honeycomb.io:443"
 	}
-
-	ocAgentAddr, ok := os.LookupEnv("OTEL_AGENT_ENDPOINT")
-	if !ok {
-		ocAgentAddr = "0.0.0.0:55678"
-	}
-
-	oce, err := ocagent.NewExporter(
-		ocagent.WithAddress(ocAgentAddr),
-		ocagent.WithInsecure(),
-		ocagent.WithServiceName("frontend"))
-
+	ctx := context.Background()
+	//creds := credentials.NewClientTLSFromCert(nil, "")
+	driver := otlpgrpc.NewDriver(
+		otlpgrpc.WithInsecure(),
+		otlpgrpc.WithEndpoint(otlpendpoint))
+	exporter, err := otlp.NewExporter(ctx, driver)
 	if err != nil {
-		log.Fatalf("Failed to create ocagent-exporter: %v", err)
+		log.Fatal(err)
 	}
-	trace.RegisterExporter(oce)
-	view.RegisterExporter(oce)
-
-	// Some configurations to get observability signals out.
-	view.SetReportingPeriod(7 * time.Second)
-	trace.ApplyConfig(trace.Config{
-		DefaultSampler: trace.AlwaysSample(),
-	})
-
-	log.Info("opencensus initialization completed.")
-}
-
-func initTracing(log logrus.FieldLogger) {
-	// This is a demo app with low QPS. trace.AlwaysSample() is used here
-	// to make sure traces are available for observation and analysis.
-	// In a production environment or high QPS setup please use
-	// trace.ProbabilitySampler set at the desired probability.
-	trace.ApplyConfig(trace.Config{DefaultSampler: trace.AlwaysSample()})
-
-	initOpenCensusTracing(log)
+	propagator := propagation.NewCompositeTextMapPropagator(propagation.Baggage{}, propagation.TraceContext{})
+	otel.SetTextMapPropagator(propagator)
+	otel.SetTracerProvider(
+		trace.NewTracerProvider(
+			trace.WithSpanProcessor(trace.NewBatchSpanProcessor(exporter)),
+		),
+	)
 }
 
 func mustMapEnv(target *string, envKey string) {
@@ -201,7 +179,9 @@ func mustConnGRPC(ctx context.Context, conn **grpc.ClientConn, addr string) {
 	defer cancel()
 	*conn, err = grpc.DialContext(ctx, addr,
 		grpc.WithInsecure(),
-		grpc.WithStatsHandler(&ocgrpc.ClientHandler{}))
+		grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor(otelgrpc.WithTracerProvider(otel.GetTracerProvider()))),
+		grpc.WithStreamInterceptor(otelgrpc.StreamClientInterceptor(otelgrpc.WithTracerProvider(otel.GetTracerProvider()))),
+		grpc.WithTimeout(time.Second*3))
 	if err != nil {
 		panic(errors.Wrapf(err, "grpc: failed to connect %s", addr))
 	}

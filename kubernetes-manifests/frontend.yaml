@@ -66,8 +66,8 @@ spec:
             value: "checkoutservice:5050"
           - name: AD_SERVICE_ADDR
             value: "adservice:9555"
-          - name: OTEL_AGENT_ENDPOINT
-            value: "otel-agent.otel.svc.cluster.local:55678"
+          - name: OTEL_EXPORTER_OTLP_ENDPOINT
+            value: "otel-collector.otel.svc.cluster.local:4317"
           resources:
             requests:
               cpu: 100m
