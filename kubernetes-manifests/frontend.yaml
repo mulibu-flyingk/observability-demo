@@ -68,6 +68,12 @@ spec:
             value: "adservice:9555"
           - name: OTEL_EXPORTER_OTLP_ENDPOINT
             value: "otel-collector.otel.svc.cluster.local:4317"
+          - name: POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          - name: OTEL_RESOURCE_ATTRIBUTES
+            value: service.name=frontend,ip=$(POD_IP)
           resources:
             requests:
               cpu: 100m
