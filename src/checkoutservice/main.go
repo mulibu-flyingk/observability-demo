@@ -20,13 +20,18 @@ import (
 	"net"
 	"os"
 	"time"
-
-	"contrib.go.opencensus.io/exporter/ocagent"
+	"math/rand"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
-	"go.opencensus.io/plugin/ocgrpc"
-	"go.opencensus.io/stats/view"
-	"go.opencensus.io/trace"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
+	"go.opentelemetry.io/otel/exporters/otlp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpgrpc"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/trace"
+	tracebg "go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -66,10 +71,32 @@ type checkoutService struct {
 	paymentSvcAddr        string
 }
 
+func initOtelTracing(log logrus.FieldLogger) {
+	otlpendpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if otlpendpoint == "" {
+		otlpendpoint = "localhost:4317"
+	}
+	ctx := context.Background()
+	//creds := credentials.NewClientTLSFromCert(nil, "")
+	driver := otlpgrpc.NewDriver(
+		otlpgrpc.WithInsecure(),
+		otlpgrpc.WithEndpoint(otlpendpoint))
+	exporter, err := otlp.NewExporter(ctx, driver)
+	if err != nil {
+		log.Fatal(err)
+	}
+	propagator := propagation.NewCompositeTextMapPropagator(propagation.Baggage{}, propagation.TraceContext{})
+	otel.SetTextMapPropagator(propagator)
+	otel.SetTracerProvider(
+		trace.NewTracerProvider(
+			trace.WithSpanProcessor(trace.NewBatchSpanProcessor(exporter)),
+		),
+	)
+}
 func main() {
 	if os.Getenv("DISABLE_TRACING") == "" {
 		log.Info("Tracing enabled.")
-		go initTracing()
+		go initOtelTracing(log)
 	} else {
 		log.Info("Tracing disabled.")
 	}
@@ -95,54 +122,17 @@ func main() {
 	}
 
 	var srv *grpc.Server
-	if os.Getenv("DISABLE_STATS") == "" {
-		log.Info("Stats enabled.")
-		srv = grpc.NewServer(grpc.StatsHandler(&ocgrpc.ServerHandler{}))
-	} else {
-		log.Info("Stats disabled.")
-		srv = grpc.NewServer()
-	}
+
+	srv = grpc.NewServer(
+		grpc.UnaryInterceptor(otelgrpc.UnaryServerInterceptor(otelgrpc.WithTracerProvider(otel.GetTracerProvider()))),
+		grpc.StreamInterceptor(otelgrpc.StreamServerInterceptor(otelgrpc.WithTracerProvider(otel.GetTracerProvider()))),
+	)
+
 	pb.RegisterCheckoutServiceServer(srv, svc)
 	healthpb.RegisterHealthServer(srv, svc)
 	log.Infof("starting to listen on tcp: %q", lis.Addr().String())
 	err = srv.Serve(lis)
 	log.Fatal(err)
-}
-
-func initOpenCensusTracing() {
-	svcAddr := os.Getenv("OTEL_AGENT_ENDPOINT")
-	if svcAddr == "" {
-		log.Info("opencensus initialization disabled.")
-		return
-	}
-
-	ocAgentAddr, ok := os.LookupEnv("OTEL_AGENT_ENDPOINT")
-	if !ok {
-		ocAgentAddr = "0.0.0.0:55678"
-	}
-
-	oce, err := ocagent.NewExporter(
-		ocagent.WithAddress(ocAgentAddr),
-		ocagent.WithInsecure(),
-		ocagent.WithServiceName("checkoutservice"))
-
-	if err != nil {
-		log.Fatalf("Failed to create ocagent-exporter: %v", err)
-	}
-	trace.RegisterExporter(oce)
-	view.RegisterExporter(oce)
-
-	// Some configurations to get observability signals out.
-	view.SetReportingPeriod(7 * time.Second)
-	trace.ApplyConfig(trace.Config{
-		DefaultSampler: trace.AlwaysSample(),
-	})
-
-	log.Info("opencensus initialization completed.")
-}
-
-func initTracing() {
-	initOpenCensusTracing()
 }
 
 func mustMapEnv(target *string, envKey string) {
@@ -165,6 +155,20 @@ func (cs *checkoutService) PlaceOrder(ctx context.Context, req *pb.PlaceOrderReq
 	log.Infof("[PlaceOrder] user_id=%q user_currency=%q", req.UserId, req.UserCurrency)
 
 	orderID, err := uuid.NewUUID()
+
+	var (
+		orderIDKey   = attribute.Key("orderid")
+		userIDKey = attribute.Key("userid")
+	)
+
+	v := baggage.Value(ctx, userIDKey)
+	userID := v.AsString()
+
+	ctx = baggage.ContextWithValues(ctx, orderIDKey.String(orderID.String()))
+	span := tracebg.SpanFromContext(ctx)
+	span.SetAttributes(userIDKey.String(userID), orderIDKey.String(orderID.String()))
+	
+
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to generate order uuid")
 	}
@@ -218,6 +222,55 @@ type orderPrep struct {
 	cartItems             []*pb.CartItem
 	shippingCostLocalized *pb.Money
 }
+func mockDatabaseCall(ctx context.Context) {
+	tracer := otel.GetTracerProvider().Tracer("")
+	ctx, span := tracer.Start(ctx, "SQL SELECT")
+	var (
+		querykey = attribute.Key("db.query")
+	)
+	span.SetAttributes(querykey.String("select * from discounts where user = ?"))
+	defer span.End()
+	time.Sleep((time.Duration(1)) * time.Second)
+}
+func loadDiscountFromDatabase(ctx context.Context, u string) (string) {
+	currentTime := time.Now()
+	hour := currentTime.Hour()
+	minute := currentTime.Minute()
+	rnum := 0
+	if (hour == 0 || hour == 8 || hour == 16) {
+		if (minute >= 30 && minute <= 45) {
+			diff := minute - 30;
+			min := int(diff / 2 + 1)
+			max := int(diff + 2)
+			rnum = rand.Intn(max - min + 1) + min
+		}
+
+	}
+	for i:=1; i < rnum; i++ {
+		mockDatabaseCall(ctx)
+	}
+	
+	return "10"
+}
+
+
+func getDiscounts(ctx context.Context, u string)(string) {
+	tracer := otel.GetTracerProvider().Tracer("")
+	ctx, span := tracer.Start(ctx, "getDiscounts")
+	var (
+		userIDKey = attribute.Key("userid")
+	)
+	span.SetAttributes(userIDKey.String(u))
+	defer span.End()
+	if u == "honeycomb-user-bees-20109" {
+		return loadDiscountFromDatabase(ctx, u)
+	} else if (rand.Intn(100 - 1 + 1) < 15 ){
+		return loadDiscountFromDatabase(ctx, u)
+	} else {
+		return ""
+	}
+	
+}
 
 func (cs *checkoutService) prepareOrderItemsAndShippingQuoteFromCart(ctx context.Context, userID, userCurrency string, address *pb.Address) (orderPrep, error) {
 	var out orderPrep
@@ -229,6 +282,13 @@ func (cs *checkoutService) prepareOrderItemsAndShippingQuoteFromCart(ctx context
 	if err != nil {
 		return out, fmt.Errorf("failed to prepare order: %+v", err)
 	}
+
+	discount := getDiscounts(ctx, userID)
+	if discount != "" {
+		fmt.Sprintf("Got a discount: %v.", discount)
+	}
+
+
 	shippingUSD, err := cs.quoteShipping(ctx, address, cartItems)
 	if err != nil {
 		return out, fmt.Errorf("shipping quote failure: %+v", err)
@@ -247,7 +307,9 @@ func (cs *checkoutService) prepareOrderItemsAndShippingQuoteFromCart(ctx context
 func (cs *checkoutService) quoteShipping(ctx context.Context, address *pb.Address, items []*pb.CartItem) (*pb.Money, error) {
 	conn, err := grpc.DialContext(ctx, cs.shippingSvcAddr,
 		grpc.WithInsecure(),
-		grpc.WithStatsHandler(&ocgrpc.ClientHandler{}))
+		grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor(otelgrpc.WithTracerProvider(otel.GetTracerProvider()))),
+		grpc.WithStreamInterceptor(otelgrpc.StreamClientInterceptor(otelgrpc.WithTracerProvider(otel.GetTracerProvider()))))
+
 	if err != nil {
 		return nil, fmt.Errorf("could not connect shipping service: %+v", err)
 	}
@@ -264,7 +326,16 @@ func (cs *checkoutService) quoteShipping(ctx context.Context, address *pb.Addres
 }
 
 func (cs *checkoutService) getUserCart(ctx context.Context, userID string) ([]*pb.CartItem, error) {
-	conn, err := grpc.DialContext(ctx, cs.cartSvcAddr, grpc.WithInsecure(), grpc.WithStatsHandler(&ocgrpc.ClientHandler{}))
+	var (
+		userIDKey = attribute.Key("userid")
+	)
+
+	span := tracebg.SpanFromContext(ctx)
+	span.SetAttributes(userIDKey.String(userID))
+	conn, err := grpc.DialContext(ctx, cs.cartSvcAddr, grpc.WithInsecure(),
+		grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor(otelgrpc.WithTracerProvider(otel.GetTracerProvider()))),
+		grpc.WithStreamInterceptor(otelgrpc.StreamClientInterceptor(otelgrpc.WithTracerProvider(otel.GetTracerProvider()))))
+
 	if err != nil {
 		return nil, fmt.Errorf("could not connect cart service: %+v", err)
 	}
@@ -278,7 +349,10 @@ func (cs *checkoutService) getUserCart(ctx context.Context, userID string) ([]*p
 }
 
 func (cs *checkoutService) emptyUserCart(ctx context.Context, userID string) error {
-	conn, err := grpc.DialContext(ctx, cs.cartSvcAddr, grpc.WithInsecure(), grpc.WithStatsHandler(&ocgrpc.ClientHandler{}))
+	conn, err := grpc.DialContext(ctx, cs.cartSvcAddr, grpc.WithInsecure(),
+		grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor(otelgrpc.WithTracerProvider(otel.GetTracerProvider()))),
+		grpc.WithStreamInterceptor(otelgrpc.StreamClientInterceptor(otelgrpc.WithTracerProvider(otel.GetTracerProvider()))))
+
 	if err != nil {
 		return fmt.Errorf("could not connect cart service: %+v", err)
 	}
@@ -293,7 +367,10 @@ func (cs *checkoutService) emptyUserCart(ctx context.Context, userID string) err
 func (cs *checkoutService) prepOrderItems(ctx context.Context, items []*pb.CartItem, userCurrency string) ([]*pb.OrderItem, error) {
 	out := make([]*pb.OrderItem, len(items))
 
-	conn, err := grpc.DialContext(ctx, cs.productCatalogSvcAddr, grpc.WithInsecure(), grpc.WithStatsHandler(&ocgrpc.ClientHandler{}))
+	conn, err := grpc.DialContext(ctx, cs.productCatalogSvcAddr, grpc.WithInsecure(),
+		grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor(otelgrpc.WithTracerProvider(otel.GetTracerProvider()))),
+		grpc.WithStreamInterceptor(otelgrpc.StreamClientInterceptor(otelgrpc.WithTracerProvider(otel.GetTracerProvider()))))
+
 	if err != nil {
 		return nil, fmt.Errorf("could not connect product catalog service: %+v", err)
 	}
@@ -317,7 +394,10 @@ func (cs *checkoutService) prepOrderItems(ctx context.Context, items []*pb.CartI
 }
 
 func (cs *checkoutService) convertCurrency(ctx context.Context, from *pb.Money, toCurrency string) (*pb.Money, error) {
-	conn, err := grpc.DialContext(ctx, cs.currencySvcAddr, grpc.WithInsecure(), grpc.WithStatsHandler(&ocgrpc.ClientHandler{}))
+	conn, err := grpc.DialContext(ctx, cs.currencySvcAddr, grpc.WithInsecure(),
+		grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor(otelgrpc.WithTracerProvider(otel.GetTracerProvider()))),
+		grpc.WithStreamInterceptor(otelgrpc.StreamClientInterceptor(otelgrpc.WithTracerProvider(otel.GetTracerProvider()))))
+
 	if err != nil {
 		return nil, fmt.Errorf("could not connect currency service: %+v", err)
 	}
@@ -332,7 +412,10 @@ func (cs *checkoutService) convertCurrency(ctx context.Context, from *pb.Money, 
 }
 
 func (cs *checkoutService) chargeCard(ctx context.Context, amount *pb.Money, paymentInfo *pb.CreditCardInfo) (string, error) {
-	conn, err := grpc.DialContext(ctx, cs.paymentSvcAddr, grpc.WithInsecure(), grpc.WithStatsHandler(&ocgrpc.ClientHandler{}))
+	conn, err := grpc.DialContext(ctx, cs.paymentSvcAddr, grpc.WithInsecure(),
+		grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor(otelgrpc.WithTracerProvider(otel.GetTracerProvider()))),
+		grpc.WithStreamInterceptor(otelgrpc.StreamClientInterceptor(otelgrpc.WithTracerProvider(otel.GetTracerProvider()))))
+
 	if err != nil {
 		return "", fmt.Errorf("failed to connect payment service: %+v", err)
 	}
@@ -348,7 +431,9 @@ func (cs *checkoutService) chargeCard(ctx context.Context, amount *pb.Money, pay
 }
 
 func (cs *checkoutService) sendOrderConfirmation(ctx context.Context, email string, order *pb.OrderResult) error {
-	conn, err := grpc.DialContext(ctx, cs.emailSvcAddr, grpc.WithInsecure(), grpc.WithStatsHandler(&ocgrpc.ClientHandler{}))
+	conn, err := grpc.DialContext(ctx, cs.emailSvcAddr, grpc.WithInsecure(),
+		grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor(otelgrpc.WithTracerProvider(otel.GetTracerProvider()))),
+		grpc.WithStreamInterceptor(otelgrpc.StreamClientInterceptor(otelgrpc.WithTracerProvider(otel.GetTracerProvider()))))
 	if err != nil {
 		return fmt.Errorf("failed to connect email service: %+v", err)
 	}
@@ -360,7 +445,11 @@ func (cs *checkoutService) sendOrderConfirmation(ctx context.Context, email stri
 }
 
 func (cs *checkoutService) shipOrder(ctx context.Context, address *pb.Address, items []*pb.CartItem) (string, error) {
-	conn, err := grpc.DialContext(ctx, cs.shippingSvcAddr, grpc.WithInsecure(), grpc.WithStatsHandler(&ocgrpc.ClientHandler{}))
+	conn, err := grpc.DialContext(ctx,
+		cs.shippingSvcAddr,
+		grpc.WithInsecure(),
+		grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor(otelgrpc.WithTracerProvider(otel.GetTracerProvider()))),
+		grpc.WithStreamInterceptor(otelgrpc.StreamClientInterceptor(otelgrpc.WithTracerProvider(otel.GetTracerProvider()))))
 	if err != nil {
 		return "", fmt.Errorf("failed to connect email service: %+v", err)
 	}

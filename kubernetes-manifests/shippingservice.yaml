@@ -35,7 +35,7 @@ spec:
         - name: PORT
           value: "50051"
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
-          value: "otel-agent.otel.svc.cluster.local:55678"
+          value: "otel-collector.otel.svc.cluster.local:4317"
         - name: POD_IP
           valueFrom:
             fieldRef:
