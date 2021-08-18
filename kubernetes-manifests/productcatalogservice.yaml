@@ -35,8 +35,14 @@ spec:
         env:
         - name: PORT
           value: "3550"
-        - name: OTEL_AGENT_ENDPOINT
-          value: "otel-agent.otel.svc.cluster.local:55678"
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "otel-collector.otel.svc.cluster.local:55678"
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: service.name=productcatalog,ip=$(POD_IP)          
         readinessProbe:
           exec:
             command: ["/bin/grpc_health_probe", "-addr=:3550"]
