@@ -20,11 +20,13 @@ import (
 	"os"
 	"time"
 
-	"contrib.go.opencensus.io/exporter/ocagent"
 	"github.com/sirupsen/logrus"
-	"go.opencensus.io/plugin/ocgrpc"
-	"go.opencensus.io/stats/view"
-	"go.opencensus.io/trace"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpgrpc"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/trace"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -58,7 +60,7 @@ func init() {
 func main() {
 	if os.Getenv("DISABLE_TRACING") == "" {
 		log.Info("Tracing enabled.")
-		go initTracing()
+		go initOtelTracing(log)
 	} else {
 		log.Info("Tracing disabled.")
 	}
@@ -75,13 +77,12 @@ func main() {
 	}
 
 	var srv *grpc.Server
-	if os.Getenv("DISABLE_STATS") == "" {
-		log.Info("Stats enabled.")
-		srv = grpc.NewServer(grpc.StatsHandler(&ocgrpc.ServerHandler{}))
-	} else {
-		log.Info("Stats disabled.")
-		srv = grpc.NewServer()
-	}
+
+	srv = grpc.NewServer(
+		grpc.UnaryInterceptor(otelgrpc.UnaryServerInterceptor(otelgrpc.WithTracerProvider(otel.GetTracerProvider()))),
+		grpc.StreamInterceptor(otelgrpc.StreamServerInterceptor(otelgrpc.WithTracerProvider(otel.GetTracerProvider()))),
+	)
+
 	svc := &server{}
 	pb.RegisterShippingServiceServer(srv, svc)
 	healthpb.RegisterHealthServer(srv, svc)
@@ -145,38 +146,25 @@ func (s *server) ShipOrder(ctx context.Context, in *pb.ShipOrderRequest) (*pb.Sh
 	}, nil
 }
 
-func initOpenCensusTracing() {
-	svcAddr := os.Getenv("OTEL_AGENT_ENDPOINT")
-	if svcAddr == "" {
-		log.Info("opencensus initialization disabled.")
-		return
+func initOtelTracing(log logrus.FieldLogger) {
+	otlpendpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if otlpendpoint == "" {
+		otlpendpoint = "localhost:4317"
 	}
-
-	ocAgentAddr, ok := os.LookupEnv("OTEL_AGENT_ENDPOINT")
-	if !ok {
-		ocAgentAddr = "0.0.0.0:55678"
-	}
-
-	oce, err := ocagent.NewExporter(
-		ocagent.WithAddress(ocAgentAddr),
-		ocagent.WithInsecure(),
-		ocagent.WithServiceName("shippingservice"))
-
+	ctx := context.Background()
+	//creds := credentials.NewClientTLSFromCert(nil, "")
+	driver := otlpgrpc.NewDriver(
+		otlpgrpc.WithInsecure(),
+		otlpgrpc.WithEndpoint(otlpendpoint))
+	exporter, err := otlp.NewExporter(ctx, driver)
 	if err != nil {
-		log.Fatalf("Failed to create ocagent-exporter: %v", err)
+		log.Fatal(err)
 	}
-	trace.RegisterExporter(oce)
-	view.RegisterExporter(oce)
-
-	// Some configurations to get observability signals out.
-	view.SetReportingPeriod(7 * time.Second)
-	trace.ApplyConfig(trace.Config{
-		DefaultSampler: trace.AlwaysSample(),
-	})
-
-	log.Info("opencensus initialization completed.")
-}
-
-func initTracing() {
-	initOpenCensusTracing()
+	propagator := propagation.NewCompositeTextMapPropagator(propagation.Baggage{}, propagation.TraceContext{})
+	otel.SetTextMapPropagator(propagator)
+	otel.SetTracerProvider(
+		trace.NewTracerProvider(
+			trace.WithSpanProcessor(trace.NewBatchSpanProcessor(exporter)),
+		),
+	)
 }
