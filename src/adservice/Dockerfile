@@ -32,9 +32,9 @@ RUN apt-get -y update && apt-get install -qqy \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-RUN GRPC_HEALTH_PROBE_VERSION=v0.4.6 && \
-    wget -qO/bin/grpc_health_probe https://github.com/grpc-ecosystem/grpc-health-probe/releases/download/${GRPC_HEALTH_PROBE_VERSION}/grpc_health_probe-linux-amd64 && \
-    chmod +x /bin/grpc_health_probe
+RUN mkdir -p /opt/otel && \
+    wget -q -O opt/otel/javaagent.jar https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/download/v1.3.0/opentelemetry-javaagent-all.jar
+
 
 WORKDIR /app
 COPY --from=builder /app .

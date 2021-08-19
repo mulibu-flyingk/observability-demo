@@ -16,8 +16,6 @@
 
 'use strict';
 
-require('./tracing.js');
-
 const path = require('path');
 const HipsterShopServer = require('./server');
 

@@ -28,21 +28,12 @@ import io.grpc.StatusRuntimeException;
 import io.grpc.health.v1.HealthCheckResponse.ServingStatus;
 import io.grpc.services.*;
 import io.grpc.stub.StreamObserver;
-import io.opencensus.common.Duration;
-import io.opencensus.contrib.grpc.metrics.RpcViews;
-import io.opencensus.exporter.metrics.ocagent.OcAgentMetricsExporter;
-import io.opencensus.exporter.metrics.ocagent.OcAgentMetricsExporterConfiguration;
-import io.opencensus.exporter.trace.ocagent.OcAgentTraceExporter;
-import io.opencensus.exporter.trace.ocagent.OcAgentTraceExporterConfiguration;
-import io.opencensus.trace.AttributeValue;
-import io.opencensus.trace.Span;
-import io.opencensus.trace.Tracer;
-import io.opencensus.trace.Tracing;
-import io.opencensus.common.Scope;
-import io.opencensus.trace.config.TraceConfig;
-import io.opencensus.trace.config.TraceParams;
-import io.opencensus.trace.samplers.Samplers;
-import io.opencensus.trace.Status;
+
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.context.Scope;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.extension.annotations.WithSpan;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -55,13 +46,7 @@ import org.apache.logging.log4j.Logger;
 
 public final class AdService {
 
-  private static final String SERVICE_NAME = "addservice";
-  private static final String DEFAULT_ENDPOINT = "localhost:55678";
-  private static final Duration RETRY_INTERVAL = Duration.create(10, 0);
-  private static final Duration EXPORT_INTERVAL = Duration.create(5, 0);
-
   private static final Logger logger = LogManager.getLogger(AdService.class);
-  private static final Tracer tracer = Tracing.getTracer();
 
   @SuppressWarnings("FieldCanBeLocal")
   private static int MAX_ADS_TO_SERVE = 2;
@@ -71,10 +56,11 @@ public final class AdService {
 
   private static final AdService service = new AdService();
 
+  @WithSpan
   private void start() throws IOException {
     int port = Integer.parseInt(System.getenv().getOrDefault("PORT", "9555"));
     healthMgr = new HealthStatusManager();
-
+    logger.info("Building server on " + port);
     server =
         ServerBuilder.forPort(port)
             .addService(new AdServiceImpl())
@@ -112,29 +98,32 @@ public final class AdService {
      *     AdResponse}
      */
     @Override
+    @WithSpan
     public void getAds(AdRequest req, StreamObserver<AdResponse> responseObserver) {
       AdService service = AdService.getInstance();
-      // Span span = tracer.getCurrentSpan();
-      try (Scope scope = tracer.spanBuilder("getAds").startScopedSpan()) {
+      Span span = Span.current();
+      try {
+        span.setAttribute("method", "getAds");
         List<Ad> allAds = new ArrayList<>();
         logger.info("received ad request (context_words=" + req.getContextKeysList() + ")");
+        long keycount =req.getContextKeysCount();
         if (req.getContextKeysCount() > 0) {
-          try (Scope childScope = tracer.spanBuilder("getAdsByCategory").startScopedSpan()) {
-            for (int i = 0; i < req.getContextKeysCount(); i++) {
-              Collection<Ad> ads = service.getAdsByCategory(req.getContextKeys(i));
-              allAds.addAll(ads);
-            }
-          } catch (Exception e) {
-            tracer.getCurrentSpan().setStatus(Status.INTERNAL.withDescription(e.toString()));
+          span.addEvent(
+              "Constructing Ads using context",
+              io.opentelemetry.api.common.Attributes.of(
+                AttributeKey.stringKey("Context Keys"), req.getContextKeysList().toString(),
+                AttributeKey.longKey("Context Keys length"), keycount ));
+          for (int i = 0; i < keycount; i++) {
+            Collection<Ad> ads = service.getAdsByCategory(req.getContextKeys(i));
+            allAds.addAll(ads);
           }
         } else {
-          try (Scope childScope = tracer.spanBuilder("getRandomAds").startScopedSpan()) {
-            allAds = service.getRandomAds();
-          } catch (Exception e) {
-            tracer.getCurrentSpan().setStatus(Status.INTERNAL.withDescription(e.toString()));
-          }
+          span.addEvent("No Context provided. Constructing random Ads.");
+          allAds = service.getRandomAds();
         }
         if (allAds.isEmpty()) {
+          // Serve random ads.
+          span.addEvent("No Ads found based on context. Constructing random Ads.");
           allAds = service.getRandomAds();
         }
         AdResponse reply = AdResponse.newBuilder().addAllAds(allAds).build();
@@ -221,56 +210,30 @@ public final class AdService {
         .build();
   }
 
+
+
+
+
+
   /** Main launches the server from the command line. */
   public static void main(String[] args) throws IOException, InterruptedException {
-    // Always sample for demo purpose. DO NOT use in production.
-    configureAlwaysSample();
     // Registers all RPC views.
-    RpcViews.registerAllGrpcViews();
+    /*
+     [TODO:rghetia] replace registerAllViews with registerAllGrpcViews. registerAllGrpcViews
+     registers new views using new measures however current grpc version records against old
+     measures. When new version of grpc (0.19) is release revert back to new. After reverting back
+     to new the new measure will not provide any tags (like method). This will create some
+     discrepencies when compared grpc measurements in Go services.
+    */
+    // RpcViews.registerAllViews();
 
-    String endPoint = System.getenv("OTEL_AGENT_ENDPOINT");
-    if (endPoint==null) {
-      endPoint = DEFAULT_ENDPOINT;
-    }
-    registerAgentExporters(endPoint);
 
-    try (Scope scope = tracer.spanBuilder("root").startScopedSpan()) {
-      // Start the RPC server. You shouldn't see any output from gRPC before this.
-      logger.info("AdService starting.");
-      final AdService service = AdService.getInstance();
-      service.start();
-      service.blockUntilShutdown();
-    } catch (InterruptedException e) {
-      logger.info("Thread interrupted, exiting in 5 seconds.");
-      Thread.sleep(5000); // Wait 5s so that last batch will be exported.
-    }
+    // Register Jaeger
 
+    // Start the RPC server. You shouldn't see any output from gRPC before this.
+    logger.info("AdService starting.");
+    final AdService service = AdService.getInstance();
+    service.start();
+    service.blockUntilShutdown();
   }
-
-  private static void configureAlwaysSample() {
-    TraceConfig traceConfig = Tracing.getTraceConfig();
-    TraceParams activeTraceParams = traceConfig.getActiveTraceParams();
-    traceConfig.updateActiveTraceParams(
-        activeTraceParams.toBuilder().setSampler(Samplers.alwaysSample()).build());
-  }
-
-  private static void registerAgentExporters(String endPoint) {
-    OcAgentTraceExporter.createAndRegister(
-        OcAgentTraceExporterConfiguration.builder()
-            .setEndPoint(endPoint)
-            .setServiceName(SERVICE_NAME)
-            .setUseInsecure(true)
-            .setEnableConfig(false)
-            .build());
-
-    OcAgentMetricsExporter.createAndRegister(
-        OcAgentMetricsExporterConfiguration.builder()
-            .setEndPoint(endPoint)
-            .setServiceName(SERVICE_NAME)
-            .setUseInsecure(true)
-            .setRetryInterval(RETRY_INTERVAL)
-            .setExportInterval(EXPORT_INTERVAL)
-            .build());
-  }
-
 }

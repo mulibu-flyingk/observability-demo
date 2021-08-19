@@ -14,14 +14,6 @@
  * limitations under the License.
  */
 
-if(process.env.DISABLE_TRACING) {
-  console.log("Tracing disabled.")
-}
-else {
-  console.log("Tracing enabled.")
-  require('./tracing.js');
-}
-
 const path = require('path');
 const grpc = require('@grpc/grpc-js');
 const pino = require('pino');

@@ -1,44 +1,40 @@
-/* tracing.js */
+"use strict";
 
-'use strict'
-
-const process = require('process');
-const opentelemetry = require('@opentelemetry/sdk-node');
-const { getNodeAutoInstrumentations } = require('@opentelemetry/auto-instrumentations-node');
-const { ConsoleSpanExporter } = require('@opentelemetry/sdk-trace-base');
-const { CollectorTraceExporter } =  require('@opentelemetry/exporter-collector-grpc');
+const grpc = require('grpc');
+const { NodeTracerProvider } = require("@opentelemetry/node");
+const { SimpleSpanProcessor } = require("@opentelemetry/tracing");
+const { CollectorTraceExporter } = require("@opentelemetry/exporter-collector-grpc");
+const { GrpcInstrumentation } = require('@opentelemetry/instrumentation-grpc');
+const { HttpInstrumentation } = require('@opentelemetry/instrumentation-http');
+const { registerInstrumentations } = require('@opentelemetry/instrumentation');
+const { ResourceAttributes } = require('@opentelemetry/semantic-conventions');
 const { Resource } = require('@opentelemetry/resources');
-const { SemanticResourceAttributes } = require('@opentelemetry/semantic-conventions');
+const provider = new NodeTracerProvider( {
+  resource: new Resource( {
+    [ResourceAttributes.SERVICE_NAME]: process.env.SERVICE_NAME,
+    [ 'ip' ]: process.env.POD_IP,
+  } )
+} );
 
-const otel_agent_endpoint = process.env.OTEL_AGENT_ENDPOINT || 'localhost:4317';
+
 
 const collectorOptions = {
-    // url is optional and can be omitted - default is grpc://localhost:4317
-    url: 'grpc://'+otel_agent_endpoint,
+	url: process.env.OTEL_EXPORTER_OTLP_ENDPOINT
   };
 
+provider.addSpanProcessor(
+  new SimpleSpanProcessor(
+    new CollectorTraceExporter(collectorOptions)
+  )
+);
 
-// configure the SDK to export telemetry data to the console
-// enable all auto-instrumentations from the meta package
-const traceExporter = new CollectorTraceExporter(collectorOptions);
-const sdk = new opentelemetry.NodeSDK({
-  resource: new Resource({
-    [SemanticResourceAttributes.SERVICE_NAME]: 'paymentservice',
-  }),
-  traceExporter,
-  instrumentations: [getNodeAutoInstrumentations()]
+provider.register();
+
+registerInstrumentations({
+  tracerProvider: provider,
+  instrumentations: [
+    new GrpcInstrumentation(),
+    new HttpInstrumentation()
+  ]
 });
-
-// initialize the SDK and register with the OpenTelemetry API
-// this enables the API to record telemetry
-sdk.start()
-  .then(() => console.log('Tracing initialized'))
-  .catch((error) => console.log('Error initializing tracing', error));
-
-// gracefully shut down the SDK on process exit
-process.on('SIGTERM', () => {
-  sdk.shutdown()
-    .then(() => console.log('Tracing terminated'))
-    .catch((error) => console.log('Error terminating tracing', error))
-    .finally(() => process.exit(0));
-});
+console.log("tracing initialized");
