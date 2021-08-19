@@ -30,10 +30,18 @@ import demo_pb2_grpc
 from grpc_health.v1 import health_pb2
 from grpc_health.v1 import health_pb2_grpc
 
-from opencensus.ext.ocagent import trace_exporter as ocagent_exporter 
-from opencensus.ext.grpc import server_interceptor
-from opencensus.common.transports.async_ import AsyncTransport
-from opencensus.trace import samplers
+from grpc import ssl_channel_credentials
+
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.trace_exporter import OTLPSpanExporter
+import opentelemetry.instrumentation.grpc
+from opentelemetry.instrumentation.grpc import (
+    GrpcInstrumentorServer,
+    server_interceptor,
+)
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleExportSpanProcessor
 
 from logger import getJSONLogger
 logger = getJSONLogger('emailservice-server')
@@ -50,10 +58,6 @@ class BaseEmailService(demo_pb2_grpc.EmailServiceServicer):
     return health_pb2.HealthCheckResponse(
       status=health_pb2.HealthCheckResponse.SERVING)
   
-  def Watch(self, request, context):
-    return health_pb2.HealthCheckResponse(
-      status=health_pb2.HealthCheckResponse.UNIMPLEMENTED)
-
 class EmailService(BaseEmailService):
   def __init__(self):
     raise Exception('cloud mail client not implemented')
@@ -112,8 +116,8 @@ class HealthCheck():
       status=health_pb2.HealthCheckResponse.SERVING)
 
 def start(dummy_mode):
-  server = grpc.server(futures.ThreadPoolExecutor(max_workers=10),
-                       interceptors=(tracer_interceptor,))
+  interceptor = server_interceptor()
+  server = grpc.server(futures.ThreadPoolExecutor(max_workers=10),interceptors=[interceptor,])
   service = None
   if dummy_mode:
     service = DummyEmailService()
@@ -135,24 +139,15 @@ def start(dummy_mode):
 
 if __name__ == '__main__':
   logger.info('starting the email service in dummy mode.')
+  otlp_exporter = OTLPSpanExporter(
+	  endpoint=os.environ.get('OTEL_EXPORTER_OTLP_ENDPOINT'),
+    insecure=True
+  )
+  
 
-  # Tracing
-  try:
-    if "DISABLE_TRACING" in os.environ:
-      raise KeyError()
-    else:
-      logger.info("Tracing enabled.")
-      sampler = samplers.AlwaysOnSampler()
-      otel_agent_endpoint = os.environ.get('OTEL_AGENT_ENDPOINT', 'localhost:55678')
-      exporter = ocagent_exporter.TraceExporter(
-            service_name="emailservice",
-            endpoint=otel_agent_endpoint)
-      tracer_interceptor = server_interceptor.OpenCensusServerInterceptor(sampler, exporter)
-  except (KeyError, DefaultCredentialsError):
-      logger.info("Tracing disabled.")
-      tracer_interceptor = server_interceptor.OpenCensusServerInterceptor()
-  except Exception as e:
-      logger.warn(f"Exception on Cloud Trace setup: {traceback.format_exc()}, tracing disabled.") 
-      tracer_interceptor = server_interceptor.OpenCensusServerInterceptor()
+  trace.set_tracer_provider(TracerProvider(resource=Resource({"service.name": "email", "service.version":"0.1", "ip": os.environ.get('POD_IP')})))
+  trace.get_tracer_provider().add_span_processor(
+      SimpleExportSpanProcessor(otlp_exporter)
+  )
   
   start(dummy_mode = True)

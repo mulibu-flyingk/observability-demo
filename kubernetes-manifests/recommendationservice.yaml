@@ -45,12 +45,16 @@ spec:
           value: "8080"
         - name: PRODUCT_CATALOG_SERVICE_ADDR
           value: "productcatalogservice:3550"
-        - name: OTEL_AGENT_ENDPOINT
-          value: "otel-agent.otel.svc.cluster.local:55678"
-        # - name: DISABLE_TRACING
-        #   value: "1"
-        # - name: DISABLE_DEBUGGER
-        #   value: "1"
+        - name: SERVICE_NAME
+          value: recommendation
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "otel-collector.otel.svc.cluster.local:4317"
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: service.name=recommendation,ip=$(POD_IP)
         resources:
           requests:
             cpu: 100m

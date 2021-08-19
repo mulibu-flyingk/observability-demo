@@ -20,22 +20,32 @@ import time
 import traceback
 from concurrent import futures
 
-import googleclouddebugger
-import googlecloudprofiler
+
 from google.auth.exceptions import DefaultCredentialsError
 import grpc
-from opencensus.ext.ocagent import trace_exporter as ocagent_exporter
-from opencensus.ext.grpc import server_interceptor
-from opencensus.trace import samplers
-from opencensus.common.transports.async_ import AsyncTransport
+
 
 import demo_pb2
 import demo_pb2_grpc
 from grpc_health.v1 import health_pb2
 from grpc_health.v1 import health_pb2_grpc
+from grpc import ssl_channel_credentials
 
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.trace_exporter import OTLPSpanExporter
+import opentelemetry.instrumentation.grpc
+from opentelemetry.instrumentation.grpc import (
+    GrpcInstrumentorServer,
+    server_interceptor,
+)
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleExportSpanProcessor
 from logger import getJSONLogger
 logger = getJSONLogger('recommendationservice-server')
+
+
+
 class RecommendationService(demo_pb2_grpc.RecommendationServiceServicer):
     def ListRecommendations(self, request, context):
         max_responses = 5
@@ -67,40 +77,17 @@ class RecommendationService(demo_pb2_grpc.RecommendationServiceServicer):
 if __name__ == "__main__":
     logger.info("initializing recommendationservice")
 
-    try:
-      if "DISABLE_TRACING" in os.environ:
-        raise KeyError()
-      else:
-        logger.info("Tracing enabled.")
-        sampler = samplers.AlwaysOnSampler()
-        otel_agent_endpoint = os.environ.get('OTEL_AGENT_ENDPOINT', 'localhost:55678')
-        exporter = ocagent_exporter.TraceExporter(
-              service_name="recommendationservice",
-              endpoint=otel_agent_endpoint)
-        tracer_interceptor = server_interceptor.OpenCensusServerInterceptor(sampler, exporter)
-    except (KeyError, DefaultCredentialsError):
-        logger.info("Tracing disabled.")
-        tracer_interceptor = server_interceptor.OpenCensusServerInterceptor()
-    except Exception as e:
-        logger.warn(f"Exception on Cloud Trace setup: {traceback.format_exc()}, tracing disabled.") 
-        tracer_interceptor = server_interceptor.OpenCensusServerInterceptor()
-   
-    try:
-      if "DISABLE_DEBUGGER" in os.environ:
-        raise KeyError()
-      else:
-        logger.info("Debugger enabled.")
-        try:
-          googleclouddebugger.enable(
-              module='recommendationserver',
-              version='1.0.0'
-          )
-        except (Exception, DefaultCredentialsError):
-            logger.error("Could not enable debugger")
-            logger.error(traceback.print_exc())
-            pass
-    except (Exception, DefaultCredentialsError):
-        logger.info("Debugger disabled.")
+    otlp_exporter = OTLPSpanExporter(
+	    endpoint=os.environ.get('OTEL_EXPORTER_OTLP_ENDPOINT'),
+        insecure=True
+    )
+  
+
+    trace.set_tracer_provider(TracerProvider(resource=Resource({"service.name": os.environ.get('SERVICE_NAME'), "service.version":"0.1", "ip": os.environ.get('POD_IP')})))
+    trace.get_tracer_provider().add_span_processor(
+        SimpleExportSpanProcessor(otlp_exporter)
+    )
+
 
     port = os.environ.get('PORT', "8080")
     catalog_addr = os.environ.get('PRODUCT_CATALOG_SERVICE_ADDR', '')
@@ -109,10 +96,10 @@ if __name__ == "__main__":
     logger.info("product catalog address: " + catalog_addr)
     channel = grpc.insecure_channel(catalog_addr)
     product_catalog_stub = demo_pb2_grpc.ProductCatalogServiceStub(channel)
-
+    interceptor = server_interceptor()
     # create gRPC server
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10),
-                      interceptors=(tracer_interceptor,))
+                      interceptors=(interceptor,))
 
     # add class to gRPC server
     service = RecommendationService()
