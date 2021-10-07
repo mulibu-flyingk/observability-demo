@@ -1,9 +1,6 @@
 provider: aws
 distro: eks
 clusterName: microservices-demo
-splunkObservability:
-  realm: eu0
-  accessToken: pWr0jzrYZ39AZdZ8MuDJrg
 otelCollector:
   enabled: true
   replicaCount: 1

@@ -31,10 +31,6 @@ data:
       #
       #  jaeger_thrift_http:
       #    url: http://jaeger-all-in-one.otel.svc.cluster.local:14268/api/traces
-      datadog:
-        api:
-          key: f3bda8133d6a20faa54819a1b8d239b0
-          site: datadoghq.eu
       otlp:
         endpoint: "my-splunk-otel-collector.splunk-otel.svc:4317"
         tls:
@@ -60,11 +56,11 @@ data:
       pipelines:
         traces:
           receivers: [otlp]
-          exporters: [datadog, otlp]
+          exporters: [otlp]
           processors: [batch, memory_limiter]
         metrics:
           receivers: [otlp]
-          exporters: [datadog, otlp]
+          exporters: [otlp]
 ---
 apiVersion: apps/v1
 kind: Deployment
